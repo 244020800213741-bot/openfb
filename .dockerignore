@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+dashboard/node_modules
+dashboard/dist
+data
+.git
+.env
+*.md
+Dockerfile
+docker-compose.yml

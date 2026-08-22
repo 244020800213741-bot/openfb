@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  openfb:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      # Persist browser profiles and session data
+      - openfb_profiles:/app/data/profiles
+      # Camoufox browser binary cache (avoids re-downloading)
+      - camoufox_cache:/root/.cache/camoufox
+    restart: unless-stopped
+    shm_size: '2g'
+    cap_add:
+      - SYS_ADMIN
+
+volumes:
+  openfb_profiles:
+  camoufox_cache:
