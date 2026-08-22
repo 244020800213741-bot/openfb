@@ -3,11 +3,15 @@ import { ConfigService } from '@nestjs/config';
 import { CamoufoxFacebookFactory } from '../../engine/adapters/camoufox-facebook.factory';
 import type { FacebookSession, SessionState } from '../../engine/interfaces/engine.interface';
 import { randomUUID } from 'crypto';
+import { MarketplaceMonitorService } from '../marketplace/marketplace-monitor.service';
+import type { MarketplaceMonitorConfig } from '../marketplace/marketplace.types';
 
 export interface CreateSessionDto {
   label: string;
-  email?: string;
-  password?: string;
+  /** Session type: "main" = normal Facebook/Messenger, "marketplace" = marketplace monitor */
+  type?: 'main' | 'marketplace';
+  /** Marketplace monitor config (only used when type=marketplace) */
+  monitor?: MarketplaceMonitorConfig;
 }
 
 export interface SessionInfo {
@@ -17,6 +21,16 @@ export interface SessionInfo {
   createdAt: string;
   lastActivityAt: string;
   wsEndpoint: string;
+  /** Session type */
+  type?: 'main' | 'marketplace';
+  /** Monitor status (if marketplace session) */
+  monitor?: {
+    config: MarketplaceMonitorConfig;
+    lastRunAt?: string;
+    nextRunAt?: string;
+    lastResultCount?: number;
+    totalEmailsSent?: number;
+  };
 }
 
 /**
@@ -33,11 +47,23 @@ export interface SessionInfo {
 export class SessionManagerService implements OnModuleDestroy {
   private readonly logger = new Logger(SessionManagerService.name);
   private readonly sessions = new Map<string, FacebookSession>();
-  private readonly sessionMeta = new Map<string, { label: string; wsEndpoint: string }>();
+  private readonly sessionMeta = new Map<string, {
+    label: string;
+    wsEndpoint: string;
+    type: 'main' | 'marketplace';
+    monitor?: {
+      config: MarketplaceMonitorConfig;
+      lastRunAt?: string;
+      nextRunAt?: string;
+      lastResultCount?: number;
+      totalEmailsSent?: number;
+    };
+  }>();
 
   constructor(
     private readonly factory: CamoufoxFacebookFactory,
     private readonly config: ConfigService,
+    private readonly monitorService: MarketplaceMonitorService,
   ) {}
 
   async createSession(dto: CreateSessionDto): Promise<SessionInfo> {
@@ -51,21 +77,31 @@ export class SessionManagerService implements OnModuleDestroy {
 
     const session = await this.factory.createSession(id, dto.label);
 
-    // If credentials are provided, attempt login
-    if (dto.email && dto.password) {
-      const camoufoxSession = session as any;
-      if (typeof camoufoxSession.loginWithCredentials === 'function') {
-        await camoufoxSession.loginWithCredentials(dto.email, dto.password);
-      }
-    }
-
     this.sessions.set(id, session);
     this.sessionMeta.set(id, {
       label: dto.label,
       wsEndpoint: session.wsEndpoint,
+      type: dto.type ?? 'main',
     });
 
+    // If this is a marketplace monitor session, register the scheduled search
+    if (dto.type === 'marketplace' && dto.monitor) {
+      this.registerMonitor(id, session, dto.monitor);
+    }
+
     return this.toSessionInfo(id, session);
+  }
+
+  private registerMonitor(
+    id: string,
+    session: FacebookSession,
+    config: MarketplaceMonitorConfig,
+  ): void {
+    this.monitorService.register(id, session, config);
+    this.sessionMeta.get(id)!.monitor = {
+      config,
+      nextRunAt: new Date(Date.now() + config.intervalMinutes * 60 * 1000).toISOString(),
+    };
   }
 
   getSession(id: string): FacebookSession | undefined {
@@ -84,6 +120,10 @@ export class SessionManagerService implements OnModuleDestroy {
     const session = this.sessions.get(id);
     if (!session) {
       throw new Error(`Session ${id} not found`);
+    }
+    // Unregister marketplace monitor if active
+    if (this.monitorService) {
+      this.monitorService.unregister(id);
     }
     await session.disconnect();
     this.sessions.delete(id);
@@ -118,13 +158,30 @@ export class SessionManagerService implements OnModuleDestroy {
 
   private toSessionInfo(id: string, session: FacebookSession): SessionInfo {
     const meta = this.sessionMeta.get(id);
-    return {
+    const info: SessionInfo = {
       id,
       label: meta?.label ?? session.label,
       state: session.state,
       createdAt: session.createdAt.toISOString(),
       lastActivityAt: session.lastActivityAt.toISOString(),
       wsEndpoint: meta?.wsEndpoint ?? session.wsEndpoint,
+      type: meta?.type ?? 'main',
     };
+
+    // Enrich with live monitor status if available
+    if (meta?.type === 'marketplace' && this.monitorService) {
+      const status = this.monitorService.getStatus(id);
+      if (status) {
+        info.monitor = {
+          config: status.config,
+          lastRunAt: status.lastRunAt?.toISOString(),
+          nextRunAt: status.nextRunAt?.toISOString(),
+          lastResultCount: status.lastResultCount,
+          totalEmailsSent: status.totalEmailsSent,
+        };
+      }
+    }
+
+    return info;
   }
 }

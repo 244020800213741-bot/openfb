@@ -50,8 +50,6 @@ export interface FacebookSession {
   stopListening(): Promise<void>;
   /** Disconnect and clean up browser resources */
   disconnect(): Promise<void>;
-  /** Get a QR code string for login (if not already authenticated) */
-  getLoginStatus(): Promise<LoginStatus>;
 }
 
 export type SessionState =
@@ -126,14 +124,6 @@ export interface SearchResult {
   id: string;
   name: string;
   preview?: string;
-}
-
-export interface LoginStatus {
-  state: SessionState;
-  /** If waiting for login, the URL of the QR/login page screenshot */
-  qrCodeUrl?: string;
-  /** If there's an error message */
-  error?: string;
 }
 
 /**

@@ -12,7 +12,6 @@ import {
   FacebookContact,
   SearchType,
   SearchResult,
-  LoginStatus,
 } from '../interfaces/engine.interface';
 import type {
   MarketplaceSearchFilters,
@@ -33,12 +32,6 @@ import type {
  *   navigate → wait for chat list → click conversation → type → send.
  */
 const FB_SELECTORS = {
-  // Login
-  loginEmail: 'input#email',
-  loginPassword: 'input[aria-label="Password"]',
-  loginButton: 'button[name="login"]',
-  loginForm: 'form[action*="login"]',
-
   // Navigation
   chatList: 'div[role="navigation"] a[href*="/t/"]',
   chatListItem: 'a[href*="/t/"]',
@@ -91,7 +84,6 @@ const MKT_SELECTORS = {
 const MARKETPLACE_URL = 'https://www.facebook.com/marketplace/';
 
 const MESSENGER_URL = 'https://www.messenger.com/';
-const FACEBOOK_URL = 'https://www.facebook.com/';
 
 export class CamoufoxFacebookSession extends EventEmitter implements FacebookSession {
   id: string;
@@ -176,44 +168,6 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
     } catch {
       return false;
     }
-  }
-
-  /**
-   * Log in to Facebook using credentials.
-   * After login, cookies persist in the Camoufox user-data-dir profile.
-   */
-  async loginWithCredentials(email: string, password: string): Promise<boolean> {
-    if (!this.page) throw new Error('Browser page not initialized');
-
-    // Navigate to Facebook login
-    await this.page.goto(FACEBOOK_URL, { waitUntil: 'domcontentloaded' });
-    this.setState('waiting_for_login');
-
-    // Fill login form
-    await this.page.fill(FB_SELECTORS.loginEmail, email);
-    await this.page.fill(FB_SELECTORS.loginPassword, password);
-    await this.page.click(FB_SELECTORS.loginButton);
-
-    // Wait for navigation or error
-    await this.page.waitForTimeout(3000);
-
-    const isLoggedIn = await this.checkLoggedIn();
-    if (isLoggedIn) {
-      // Navigate to Messenger
-      await this.page.goto(MESSENGER_URL, { waitUntil: 'domcontentloaded' });
-      await this.page.waitForTimeout(2000);
-      this.setState('authenticated');
-      return true;
-    }
-
-    // Check for 2FA / checkpoint
-    const url = this.page.url();
-    if (url.includes('checkpoint') || url.includes('two_step')) {
-      this.setState('waiting_for_login');
-      throw new Error('Facebook requires 2FA verification. Please complete it manually in the browser.');
-    }
-
-    return false;
   }
 
   /**
@@ -898,14 +852,6 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
   // ──────────────────────────────────────────────
   //  Status & cleanup
   // ──────────────────────────────────────────────
-
-  getLoginStatus(): Promise<LoginStatus> {
-    return Promise.resolve({
-      state: this.state,
-      qrCodeUrl: this.state === 'waiting_for_login' ? undefined : undefined,
-      error: this.state === 'error' ? 'Session encountered an error' : undefined,
-    });
-  }
 
   async disconnect(): Promise<void> {
     await this.stopListening();

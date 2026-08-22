@@ -147,6 +147,8 @@ export class CamoufoxProcessManager extends EventEmitter {
 
   /**
    * Find a free TCP port for the Camoufox server.
+   * Camoufox binds on IPv6 (::1) by default, so we probe both
+   * IPv4 and IPv6 to avoid false "free" results.
    */
   static async findFreePort(start = 9000, end = 9999): Promise<number> {
     return new Promise((resolve, reject) => {
@@ -155,11 +157,21 @@ export class CamoufoxProcessManager extends EventEmitter {
           reject(new Error('No free port found'));
           return;
         }
-        const server = net.createServer();
-        server.listen(port, '127.0.0.1', () => {
-          server.close(() => resolve(port));
+        // Probe IPv4 first
+        const server4 = net.createServer();
+        server4.unref();
+        server4.listen(port, '127.0.0.1', () => {
+          server4.close(() => {
+            // Then probe IPv6
+            const server6 = net.createServer();
+            server6.unref();
+            server6.listen(port, '::1', () => {
+              server6.close(() => resolve(port));
+            });
+            server6.on('error', () => tryPort(port + 1));
+          });
         });
-        server.on('error', () => tryPort(port + 1));
+        server4.on('error', () => tryPort(port + 1));
       };
       tryPort(start);
     });

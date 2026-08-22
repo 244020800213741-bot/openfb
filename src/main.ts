@@ -9,9 +9,7 @@ import { configureApp } from './configure-app';
 async function bootstrap() {
   const logger = new Logger('OpenFB');
 
-  const app = await NestFactory.create(AppModule, {
-    buffer: false,
-  });
+  const app = await NestFactory.create(AppModule);
 
   // Apply Helmet, CORS, body limits, static serving
   await configureApp(app);
@@ -60,4 +58,8 @@ async function bootstrap() {
   logger.log(``);
 }
 
-bootstrap();
+bootstrap().catch((err) => {
+  console.error('❌ Failed to start OpenFB:');
+  console.error(err);
+  process.exit(1);
+});

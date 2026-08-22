@@ -17,11 +17,11 @@ describe('Configuration', () => {
       JWT_SECRET: 'test-jwt',
     };
     const config = loadConfig();
-    expect(config.port).toBe(3000);
-    expect(config.host).toBe('0.0.0.0');
-    expect(config.maxSessions).toBe(5);
-    expect(config.camoufoxHeadless).toBe(true);
-    expect(config.camoufoxOs).toBe('windows');
+    expect(config.PORT).toBe(3000);
+    expect(config.HOST).toBe('0.0.0.0');
+    expect(config.MAX_SESSIONS).toBe(5);
+    expect(config.CAMOUFOX_HEADLESS).toBe(true);
+    expect(config.CAMOUFOX_OS).toBe('windows');
   });
 
   it('should parse custom values', () => {
@@ -34,10 +34,10 @@ describe('Configuration', () => {
       CAMOUFOX_OS: 'macos,linux',
     };
     const config = loadConfig();
-    expect(config.port).toBe(8080);
-    expect(config.maxSessions).toBe(10);
-    expect(config.camoufoxHeadless).toBe(false);
-    expect(config.camoufoxOs).toBe('macos,linux');
+    expect(config.PORT).toBe(8080);
+    expect(config.MAX_SESSIONS).toBe(10);
+    expect(config.CAMOUFOX_HEADLESS).toBe(false);
+    expect(config.CAMOUFOX_OS).toBe('macos,linux');
   });
 
   it('should parse virtual headless mode', () => {
@@ -47,7 +47,7 @@ describe('Configuration', () => {
       CAMOUFOX_HEADLESS: 'virtual',
     };
     const config = loadConfig();
-    expect(config.camoufoxHeadless).toBe('virtual');
+    expect(config.CAMOUFOX_HEADLESS).toBe('virtual');
   });
 
   it('should fail without required API_KEY', () => {

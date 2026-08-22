@@ -21,16 +21,16 @@ const headlessSchema = z
   });
 
 export const ConfigSchema = z.object({
-  host: z.string().default('0.0.0.0'),
-  port: z.coerce.number().int().min(1).max(65535).default(3000),
+  HOST: z.string().default('0.0.0.0'),
+  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
 
-  apiKey: z.string().min(1),
-  jwtSecret: z.string().min(1),
+  API_KEY: z.string().min(1),
+  JWT_SECRET: z.string().min(1),
 
   // Camoufox engine
-  camoufoxBinary: z.string().optional().default(''),
-  camoufoxHeadless: headlessSchema,
-  camoufoxHumanize: z
+  CAMOUFOX_BINARY: z.string().optional().default(''),
+  CAMOUFOX_HEADLESS: headlessSchema,
+  CAMOUFOX_HUMANIZE: z
     .string()
     .optional()
     .transform((v) => {
@@ -40,29 +40,34 @@ export const ConfigSchema = z.object({
       const n = parseFloat(v);
       return isNaN(n) ? true : n;
     }),
-  camoufoxOs: z.string().default('windows'),
-  camoufoxProxy: z.string().optional().default(''),
-  camoufoxGeoip: z.string().optional().default(''),
-  camoufoxUserDataDir: z.string().default('./data/profiles'),
-  camoufoxWindowSize: z.string().optional().default(''),
-  camoufoxLocale: z.string().optional().default(''),
+  CAMOUFOX_OS: z.string().default('windows'),
+  CAMOUFOX_PROXY: z.string().optional().default(''),
+  CAMOUFOX_GEOIP: z.string().optional().default(''),
+  CAMOUFOX_USER_DATA_DIR: z.string().default('./data/profiles'),
+  CAMOUFOX_WINDOW_SIZE: z.string().optional().default(''),
+  CAMOUFOX_LOCALE: z.string().optional().default(''),
 
   // Sessions
-  maxSessions: z.coerce.number().int().min(1).default(5),
-  sessionIdleTimeout: z.coerce.number().int().min(0).default(30),
+  MAX_SESSIONS: z.coerce.number().int().min(1).default(5),
+  SESSION_IDLE_TIMEOUT: z.coerce.number().int().min(0).default(30),
 
   // Webhooks
-  webhookUrl: z.string().url().optional().or(z.literal('')).default(''),
-  webhookSecret: z.string().optional().default(''),
+  WEBHOOK_URL: z.string().url().optional().or(z.literal('')).default(''),
+  WEBHOOK_SECRET: z.string().optional().default(''),
 
   // Rate limiting
-  rateLimitMessagesPerMin: z.coerce.number().int().min(1).default(60),
-  queueConcurrency: z.coerce.number().int().min(1).default(1),
+  RATE_LIMIT_MESSAGES_PER_MIN: z.coerce.number().int().min(1).default(60),
+  QUEUE_CONCURRENCY: z.coerce.number().int().min(1).default(1),
 
   // Dashboard
-  dashboardEnabled: boolString.default('true'),
-  dashboardUsername: z.string().default('admin'),
-  dashboardPassword: z.string().default('admin'),
+  DASHBOARD_ENABLED: boolString.default(true),
+  DASHBOARD_USERNAME: z.string().default('admin'),
+  DASHBOARD_PASSWORD: z.string().default('admin'),
+
+  // Email (Gmail) — optional, used for marketplace monitor alerts
+  GMAIL_USER: z.string().optional().default(''),
+  GMAIL_APP_PASSWORD: z.string().optional().default(''),
+  GMAIL_TO: z.string().optional().default(''),
 });
 
 export type OpenFbConfig = z.infer<typeof ConfigSchema>;

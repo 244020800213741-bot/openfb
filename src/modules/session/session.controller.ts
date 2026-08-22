@@ -1,7 +1,9 @@
-import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiKeyGuard } from '../auth/api-key.guard';
-import { SessionManagerService, CreateSessionDto, SessionInfo } from './session-manager.service';
+import { SessionManagerService } from './session-manager.service';
+import type { SessionInfo } from './session-manager.service';
+import { CreateSessionDto } from './dto/create-session.dto';
 
 @ApiTags('Session')
 @ApiBearerAuth()
@@ -17,7 +19,9 @@ export class SessionController {
   }
 
   @Post()
-  @ApiOperation({ summary: 'Create a new Facebook session (launches Camoufox browser)' })
+  @ApiOperation({
+    summary: 'Create a new session — "main" (Facebook/Messenger) or "marketplace" (monitor with scheduled searches + email alerts)',
+  })
   async createSession(@Body() dto: CreateSessionDto): Promise<SessionInfo> {
     return this.sessionManager.createSession(dto);
   }

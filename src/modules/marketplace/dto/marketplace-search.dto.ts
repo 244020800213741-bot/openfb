@@ -35,7 +35,7 @@ export enum MarketplaceItemTypeEnum {
 export class MarketplaceSearchDto {
   @ApiProperty({ example: 'iPhone 13', description: 'Search query text' })
   @IsString()
-  query: string;
+  query!: string;
 
   @ApiPropertyOptional({ example: 'Madrid, Spain', description: 'Location text (city, address, place name)' })
   @IsOptional()

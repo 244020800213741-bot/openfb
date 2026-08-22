@@ -59,6 +59,34 @@ export type MarketplaceCondition =
   | 'used_good'
   | 'used_fair';
 
+/** Configuration for a marketplace monitoring session. */
+export interface MarketplaceMonitorConfig {
+  /** Search query (e.g. "iPhone 13") */
+  query: string;
+  /** Location text (city, address, place name) */
+  location?: string;
+  /** Search radius in km */
+  radiusKm?: number;
+  /** Minimum price */
+  minPrice?: number;
+  /** Maximum price */
+  maxPrice?: number;
+  /** Sort order */
+  sortBy?: string;
+  /** Condition filter(s) */
+  condition?: string[];
+  /** Only listings posted after this date */
+  postedAfter?: string;
+  /** Listing type */
+  itemType?: string;
+  /** How often to run the search, in minutes */
+  intervalMinutes: number;
+  /** Maximum number of results to send per email */
+  maxResults: number;
+  /** Email recipient (defaults to GMAIL_TO or GMAIL_USER from env) */
+  emailTo?: string;
+}
+
 export interface MarketplaceSearchResult {
   listings: MarketplaceListing[];
   totalFound: number;
