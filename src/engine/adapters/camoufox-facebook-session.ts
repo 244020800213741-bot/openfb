@@ -114,7 +114,7 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
   //  Connection lifecycle
   // ──────────────────────────────────────────────
 
-  async connect(): Promise<void> {
+  async connect(storageStatePath?: string): Promise<void> {
     try {
       // Connect to the Camoufox remote server via Playwright WebSocket.
       // Camoufox exposes a Playwright-compatible WS endpoint (like
@@ -128,6 +128,23 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
       const contexts = this.browser.contexts();
       this.context = contexts[0] ?? (await this.browser.newContext());
 
+      // If we have a saved storage state (cookies from shared login),
+      // load it into the browser context BEFORE navigating.
+      if (storageStatePath) {
+        try {
+          const fs = await import('fs');
+          if (fs.existsSync(storageStatePath)) {
+            const state = JSON.parse(fs.readFileSync(storageStatePath, 'utf-8'));
+            if (state.cookies && state.cookies.length > 0) {
+              await this.context.addCookies(state.cookies);
+              console.log(`[CamoufoxFacebookSession] Loaded ${state.cookies.length} cookies from shared login`);
+            }
+          }
+        } catch (err) {
+          console.warn(`[CamoufoxFacebookSession] Failed to load storage state: ${(err as Error).message}`);
+        }
+      }
+
       // Use existing page or create one
       const pages = this.context.pages();
       this.page = pages[0] ?? (await this.context.newPage());
@@ -135,16 +152,25 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
       // Set a realistic viewport
       await this.page.setViewportSize({ width: 1280, height: 800 });
 
-      // Navigate to Messenger
-      await this.page.goto(MESSENGER_URL, { waitUntil: 'domcontentloaded' });
+      // Navigate to Facebook first (not Messenger). The shared login saves
+      // cookies for facebook.com, and Messenger requires facebook.com cookies
+      // to authenticate. Going to facebook.com first ensures the session
+      // cookies are recognised, then we can redirect to Messenger.
+      await this.page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded' });
 
       // Wait a moment for potential redirects
-      await this.page.waitForTimeout(2000);
+      await this.page.waitForTimeout(3000);
 
       // Check if we're logged in
       const isLoggedIn = await this.checkLoggedIn();
       if (!isLoggedIn) {
         this.setState('waiting_for_login');
+        // Start polling for login completion in the background.
+        // This handles the case where the user completes Facebook's
+        // verification (2FA, checkpoint, etc.) after the session starts.
+        this.pollForLogin().catch(() => {
+          // Login polling errors are non-fatal; the state stays 'waiting_for_login'
+        });
       } else {
         this.setState('authenticated');
       }
@@ -156,18 +182,126 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
     }
   }
 
+  /**
+   * Poll in the background for login completion.
+   * Checks every 5 seconds for up to 30 minutes.
+   * Emits 'state_change' → 'authenticated' when login is detected.
+   */
+  private async pollForLogin(): Promise<void> {
+    console.log('[CamoufoxFacebookSession] Starting login polling (checks every 5s for up to 30 min)');
+    for (let i = 0; i < 360; i++) {
+      // 30 minutes max, 5s interval
+      await new Promise((r) => setTimeout(r, 5000));
+      if (this.state === 'disconnected' || this.state === 'error') {
+        console.log('[CamoufoxFacebookSession] Login polling stopped — session disconnected/error');
+        return;
+      }
+      if (this.state === 'authenticated') {
+        console.log('[CamoufoxFacebookSession] Login polling stopped — already authenticated');
+        return;
+      }
+      try {
+        const isLoggedIn = await this.checkLoggedIn();
+        if (isLoggedIn) {
+          console.log(`[CamoufoxFacebookSession] ✓✓✓ LOGIN DETECTED after ${(i + 1) * 5}s — transitioning to authenticated`);
+          this.setState('authenticated');
+          this.lastActivityAt = new Date();
+          return;
+        }
+      } catch (err) {
+        console.log(`[CamoufoxFacebookSession] Login poll check error (non-fatal): ${(err as Error).message}`);
+      }
+    }
+    console.log('[CamoufoxFacebookSession] Login polling timed out after 30 minutes');
+  }
+
+  /**
+   * Manually re-check whether the session is now authenticated.
+   * Useful when the user completed Facebook verification after the
+   * session was created. Returns the current state.
+   */
+  async checkAuth(): Promise<SessionState> {
+    if (!this.page) return this.state;
+    // If already authenticated, nothing to do
+    if (this.state === 'authenticated') return this.state;
+    // Only re-check if we're waiting for login (not disconnected/error)
+    if (this.state !== 'waiting_for_login') return this.state;
+
+    try {
+      // Navigate to Facebook to see if login redirect is gone
+      const url = this.page.url();
+      if (!url.includes('facebook.com') && !url.includes('messenger.com')) {
+        await this.page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded' });
+        await this.page.waitForTimeout(3000);
+      }
+      const isLoggedIn = await this.checkLoggedIn();
+      if (isLoggedIn) {
+        this.setState('authenticated');
+        this.lastActivityAt = new Date();
+      }
+    } catch {
+      // ignore — stay in current state
+    }
+    return this.state;
+  }
+
   private async checkLoggedIn(): Promise<boolean> {
     if (!this.page) return false;
     const url = this.page.url();
-    // If we're on messenger.com and not redirected to login
-    if (url.includes('login') || url.includes('checkpoint')) return false;
-    // Check for chat list presence
-    try {
-      await this.page.waitForSelector(FB_SELECTORS.chatListItem, { timeout: 8000 });
-      return true;
-    } catch {
+    console.log(`[CamoufoxFacebookSession] checkLoggedIn() — current URL: ${url}`);
+
+    // If we're on a login or checkpoint page, definitely not logged in
+    if (url.includes('login') || url.includes('checkpoint')) {
+      console.log('[CamoufoxFacebookSession] Not logged in — on login/checkpoint page');
       return false;
     }
+
+    // If we're not on facebook.com or messenger.com at all, probably not logged in
+    if (!url.includes('facebook.com') && !url.includes('messenger.com')) {
+      console.log('[CamoufoxFacebookSession] Not on FB/Messenger domain');
+      return false;
+    }
+
+    // Try multiple selectors that indicate a logged-in state.
+    // Facebook/Messenger UI changes frequently, so we check several.
+    const loggedInSelectors = [
+      // Messenger chat list items
+      'a[href*="/t/"]',
+      // Messenger / Facebook navigation bar
+      'div[role="navigation"]',
+      // Facebook top bar with account menu
+      'a[aria-label*="ccount" i]',
+      'a[aria-label*="Profile" i]',
+      // Messenger chat input box (only visible when logged in)
+      'div[contenteditable="true"][role="textbox"]',
+      // Facebook feed
+      'div[role="feed"]',
+      // Messenger left sidebar
+      'div[role="main"]',
+      // Facebook home link in nav
+      'a[aria-label="Facebook"]',
+      // Generic: any link to user's profile
+      'a[href*="/profile.php"]',
+    ];
+
+    for (const selector of loggedInSelectors) {
+      try {
+        const visible = await this.page
+          .locator(selector)
+          .first()
+          .isVisible({ timeout: 2000 })
+          .catch(() => false);
+        if (visible) {
+          console.log(`[CamoufoxFacebookSession] ✓ Logged in detected (selector: ${selector})`);
+          return true;
+        }
+      } catch {
+        // try next selector
+      }
+    }
+
+    console.log('[CamoufoxFacebookSession] Not logged in — no logged-in selectors found');
+    return false;
   }
 
   /**
@@ -450,12 +584,27 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
     if (!this.page) throw new Error('Page not ready');
 
     const limit = filters.limit ?? 24;
+
+    // If we have a location name but no coordinates, geocode it first.
+    // Facebook Marketplace search requires lat/lng for location-based results.
+    if (filters.location && !filters.latitude && !filters.longitude) {
+      const coords = await this.geocodeLocation(filters.location);
+      if (coords) {
+        filters = { ...filters, ...coords };
+      }
+    }
+
     const searchUrl = this.buildMarketplaceSearchUrl(filters);
 
     try {
       // Navigate to Marketplace search
+      console.log(`[CamoufoxFacebookSession] Navigating to: ${searchUrl}`);
       await this.page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
       await this.page.waitForTimeout(2000);
+
+      // Log the final URL after redirects (Facebook may redirect to a
+      // location-specific page)
+      console.log(`[CamoufoxFacebookSession] After navigation, URL is: ${this.page.url()}`);
 
       // Apply filters that can't be set via URL params (price, radius, condition)
       await this.applyMarketplaceFilters(filters);
@@ -475,6 +624,8 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
         : listings;
 
       this.lastActivityAt = new Date();
+
+      console.log(`[CamoufoxFacebookSession] Marketplace search returned ${filtered.length} listings (of ${listings.length} total)`);
 
       return {
         listings: filtered,
@@ -546,9 +697,17 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
     const params = new URLSearchParams();
     params.set('query', filters.query);
 
+    // Facebook Marketplace requires latitude/longitude for location-based
+    // search. If we have them, include them in the URL so results are
+    // geographically relevant from the first page load.
     if (filters.latitude && filters.longitude) {
       params.set('latitude', String(filters.latitude));
       params.set('longitude', String(filters.longitude));
+      console.log(`[CamoufoxFacebookSession] Market URL uses coordinates: ${filters.latitude}, ${filters.longitude}`);
+    } else if (filters.location) {
+      console.log(`[CamoufoxFacebookSession] Market URL has location text "${filters.location}" but no coordinates — will try UI filter`);
+    } else {
+      console.log('[CamoufoxFacebookSession] Market URL has no location — Facebook will use IP-based location');
     }
 
     // Sort maps to the `sortBy` URL param on Facebook
@@ -578,60 +737,120 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
     return `${MARKETPLACE_URL}search/?${params.toString()}`;
   }
 
+  /**
+   * Geocode a location name to latitude/longitude using OpenStreetMap
+   * Nominatim (free, no API key needed). Returns null if geocoding fails.
+   */
+  private async geocodeLocation(locationName: string): Promise<{ latitude: number; longitude: number } | null> {
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(locationName)}&limit=1`;
+      console.log(`[CamoufoxFacebookSession] Geocoding location: "${locationName}"`);
+      const response = await fetch(url, {
+        headers: { 'User-Agent': 'OpenFB/1.0 (marketplace search)' },
+      });
+      if (!response.ok) {
+        console.log(`[CamoufoxFacebookSession] Geocoding failed: HTTP ${response.status}`);
+        return null;
+      }
+      const data = await response.json() as any[];
+      if (!data || data.length === 0) {
+        console.log(`[CamoufoxFacebookSession] Geocoding returned no results for "${locationName}"`);
+        return null;
+      }
+      const lat = parseFloat(data[0].lat);
+      const lon = parseFloat(data[0].lon);
+      console.log(`[CamoufoxFacebookSession] Geocoded "${locationName}" → ${lat}, ${lon} (${data[0].display_name})`);
+      return { latitude: lat, longitude: lon };
+    } catch (err) {
+      console.log(`[CamoufoxFacebookSession] Geocoding error: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
   private async applyMarketplaceFilters(filters: MarketplaceSearchFilters): Promise<void> {
     if (!this.page) return;
 
-    // Set location if provided as text
-    if (filters.location) {
+    // Set location if provided as text — but only if we don't already have
+    // coordinates in the URL (which is more reliable).
+    if (filters.location && !filters.latitude && !filters.longitude) {
+      console.log(`[CamoufoxFacebookSession] Applying location filter via UI: "${filters.location}"`);
       try {
         const locInput = this.page.locator(MKT_SELECTORS.filterLocationInput).first();
-        await locInput.click({ timeout: 3000 });
-        await locInput.fill(filters.location, { timeout: 3000 });
-        await this.page.waitForTimeout(1000);
-        // Click the first suggestion
-        const suggestion = this.page.locator('ul[role="listbox"] li').first();
-        await suggestion.click({ timeout: 3000 }).catch(() => {});
-        await this.page.waitForTimeout(1000);
-      } catch {
-        // Location filter may not be visible — ignore
+        const locVisible = await locInput.isVisible({ timeout: 2000 }).catch(() => false);
+        if (!locVisible) {
+          console.log('[CamoufoxFacebookSession] Location input not found/visible — skipping UI location filter');
+        } else {
+          await locInput.click({ timeout: 3000 });
+          await locInput.fill(filters.location, { timeout: 3000 });
+          await this.page.waitForTimeout(1000);
+          // Click the first suggestion
+          const suggestion = this.page.locator('ul[role="listbox"] li').first();
+          const sugVisible = await suggestion.isVisible({ timeout: 2000 }).catch(() => false);
+          if (sugVisible) {
+            await suggestion.click({ timeout: 3000 });
+            console.log('[CamoufoxFacebookSession] Location suggestion clicked');
+          } else {
+            console.log('[CamoufoxFacebookSession] No location suggestion appeared — pressing Enter');
+            await this.page.keyboard.press('Enter');
+          }
+          await this.page.waitForTimeout(1000);
+        }
+      } catch (err) {
+        console.log(`[CamoufoxFacebookSession] Location UI filter failed: ${(err as Error).message}`);
       }
+    } else if (filters.latitude && filters.longitude) {
+      console.log('[CamoufoxFacebookSession] Coordinates already in URL — skipping UI location filter');
     }
 
     // Set radius if provided
     if (filters.radiusKm) {
+      console.log(`[CamoufoxFacebookSession] Applying radius filter: ${filters.radiusKm} km`);
       try {
         const radiusSelect = this.page.locator(MKT_SELECTORS.filterRadiusSelect).first();
-        await radiusSelect.selectOption({
-          label: `${filters.radiusKm} km`,
-        }).catch(() => {
-          // Try matching by value or partial text
-          return this.page!.locator(MKT_SELECTORS.filterRadiusSelect).first()
-            .selectOption({ index: 2 }).catch(() => {});
-        });
-        await this.page.waitForTimeout(500);
-      } catch {
-        // Radius filter may not be available
+        const radVisible = await radiusSelect.isVisible({ timeout: 2000 }).catch(() => false);
+        if (!radVisible) {
+          console.log('[CamoufoxFacebookSession] Radius select not found — skipping');
+        } else {
+          await radiusSelect.selectOption({
+            label: `${filters.radiusKm} km`,
+          }).catch(() => {
+            // Try matching by value or partial text
+            return this.page!.locator(MKT_SELECTORS.filterRadiusSelect).first()
+              .selectOption({ index: 2 }).catch(() => {});
+          });
+          console.log('[CamoufoxFacebookSession] Radius filter applied');
+          await this.page.waitForTimeout(500);
+        }
+      } catch (err) {
+        console.log(`[CamoufoxFacebookSession] Radius filter failed: ${(err as Error).message}`);
       }
     }
 
     // Set price range
     if (filters.minPrice !== undefined) {
+      console.log(`[CamoufoxFacebookSession] Applying min price: ${filters.minPrice}`);
       try {
         const minInput = this.page.locator(MKT_SELECTORS.filterMinPrice).first();
         await minInput.fill(String(filters.minPrice), { timeout: 3000 });
         await this.page.waitForTimeout(500);
-      } catch {}
+      } catch (err) {
+        console.log(`[CamoufoxFacebookSession] Min price filter failed: ${(err as Error).message}`);
+      }
     }
     if (filters.maxPrice !== undefined) {
+      console.log(`[CamoufoxFacebookSession] Applying max price: ${filters.maxPrice}`);
       try {
         const maxInput = this.page.locator(MKT_SELECTORS.filterMaxPrice).first();
         await maxInput.fill(String(filters.maxPrice), { timeout: 3000 });
         await this.page.waitForTimeout(500);
-      } catch {}
+      } catch (err) {
+        console.log(`[CamoufoxFacebookSession] Max price filter failed: ${(err as Error).message}`);
+      }
     }
 
     // Set condition filters
     if (filters.condition && filters.condition.length > 0) {
+      console.log(`[CamoufoxFacebookSession] Applying condition filter: ${filters.condition.join(', ')}`);
       for (const cond of filters.condition) {
         try {
           const condLabel =

@@ -21,6 +21,13 @@ export class ApiKeyGuard implements CanActivate {
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<Request>();
+    const url = request.url || '';
+
+    // Allow static assets and the dashboard UI (no API key required)
+    if (url.startsWith('/api/docs') || url.startsWith('/api/docs-json')) {
+      return true;
+    }
+
     const apiKey =
       (request.headers['x-api-key'] as string) ||
       (request.query.apiKey as string) ||

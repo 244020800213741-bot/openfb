@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
+import { ServeStaticModule } from '@nestjs/serve-static';
+import { join } from 'path';
 import { AuthModule } from './modules/auth/auth.module';
 import { SessionModule } from './modules/session/session.module';
 import { MessageModule } from './modules/message/message.module';
@@ -38,6 +40,11 @@ import { validateConfig } from './config/configuration';
     ConfigModule.forRoot({
       isGlobal: true,
       validate: validateConfig as any,
+    }),
+    // Serve the compiled dashboard (React build) from the same origin as the API
+    ServeStaticModule.forRoot({
+      rootPath: join(__dirname, '..', 'dashboard', 'dist'),
+      exclude: ['/api/*splat'],
     }),
     AuthModule,
     SessionModule,

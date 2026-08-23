@@ -47,4 +47,20 @@ export class SessionController {
     const image = await this.sessionManager.getScreenshot(id);
     return { image };
   }
+
+  @Post(':id/check-auth')
+  @ApiOperation({
+    summary: 'Re-check whether the session is now authenticated (after completing Facebook login/verification)',
+  })
+  async checkAuth(@Param('id') id: string): Promise<{ state: string }> {
+    const result = await this.sessionManager.checkAuth(id);
+    return { state: result.state };
+  }
+
+  @Get(':id/diagnose')
+  @ApiOperation({ summary: 'Get diagnostic info about the session browser (URL, title, state)' })
+  async diagnose(@Param('id') id: string): Promise<{ state: string; url: string; title: string }> {
+    const info = await this.sessionManager.diagnoseSession(id);
+    return info;
+  }
 }

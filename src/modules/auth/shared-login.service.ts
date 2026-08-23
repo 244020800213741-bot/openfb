@@ -20,6 +20,7 @@ import { firefox, Browser, Page } from 'playwright';
 export class SharedLoginService {
   private readonly logger = new Logger(SharedLoginService.name);
   private readonly sharedProfileDir: string;
+  private readonly storageStatePath: string;
   private process: ChildProcess | null = null;
   private wsEndpoint: string | null = null;
   private browser: Browser | null = null;
@@ -29,6 +30,7 @@ export class SharedLoginService {
   constructor(private readonly config: ConfigService) {
     const baseDir = this.config.get<string>('CAMOUFOX_USER_DATA_DIR') || './data/profiles';
     this.sharedProfileDir = `${baseDir}/_shared_login`;
+    this.storageStatePath = path.join(this.sharedProfileDir, 'storage_state.json');
   }
 
   get profileDir(): string {
@@ -36,14 +38,35 @@ export class SharedLoginService {
   }
 
   /**
+   * Path to the saved Playwright storage state (cookies + localStorage).
+   * This is what the factory loads into new sessions to inherit the login.
+   */
+  get storageStateFile(): string {
+    return this.storageStatePath;
+  }
+
+  /**
    * Whether the shared login profile exists on disk.
-   * Used by the factory to decide whether to copy it into new sessions.
+   * Checks for the storage state JSON file, which contains the actual
+   * cookies and localStorage needed to authenticate new sessions.
    */
   get hasSharedProfile(): boolean {
-    // We check for a marker file instead of just the dir, because the dir
-    // may exist but be empty if login was never completed.
     try {
-      return fs.existsSync(path.join(this.sharedProfileDir, '.openfb_logged_in'));
+      if (!fs.existsSync(this.storageStatePath)) {
+        return false;
+      }
+      // Verify the storage state file has actual cookies
+      const raw = fs.readFileSync(this.storageStatePath, 'utf-8');
+      const state = JSON.parse(raw);
+      if (!state.cookies || state.cookies.length === 0) {
+        return false;
+      }
+      // Check for Facebook session cookies
+      const hasFbCookies = state.cookies.some(
+        (c: any) =>
+          c.domain?.includes('facebook.com') || c.domain?.includes('messenger.com'),
+      );
+      return hasFbCookies;
     } catch {
       return false;
     }
@@ -152,18 +175,24 @@ export class SharedLoginService {
 
   /**
    * Poll for successful login and write a marker file when detected.
+   * After detecting login, keeps the browser alive briefly so Firefox
+   * flushes cookies/session data to the persistent profile on disk.
    */
   private async pollForLogin(): Promise<void> {
     if (!this.page) return;
+
+    let loginDetected = false;
 
     for (let i = 0; i < 120; i++) {
       // 10 minutes max
       try {
         if (!this.page || this.page.isClosed()) {
           this.logger.log('Login window closed by user');
-          this.cleanupBrowser();
+          await this.cleanupBrowser();
           return;
         }
+
+        if (loginDetected) continue;
 
         const url = this.page.url();
         // If we're on the Facebook home feed (not login page), we're logged in
@@ -172,17 +201,38 @@ export class SharedLoginService {
           !url.includes('login') &&
           !url.includes('checkpoint')
         ) {
-          // Double-check by looking for a logged-in element
-          const hasFeed = await this.page
-            .locator('div[role="feed"], div[role="main"], a[aria-label*="ccount" i]', { hasText: '' })
-            .first()
-            .isVisible({ timeout: 3000 })
-            .catch(() => false);
+          // Double-check by looking for logged-in indicators.
+          // Try multiple selectors since FB UI changes frequently.
+          const loggedInSelectors = [
+            'div[role="feed"]',
+            'div[role="main"]',
+            'a[aria-label*="ccount" i]',
+            'a[aria-label*="Profile" i]',
+            'div[contenteditable="true"][role="textbox"]',
+            'a[href*="/t/"]',
+            'div[role="navigation"]',
+            'a[aria-label="Facebook"]',
+          ];
+
+          let hasFeed = false;
+          for (const selector of loggedInSelectors) {
+            hasFeed = await this.page
+              .locator(selector)
+              .first()
+              .isVisible({ timeout: 2000 })
+              .catch(() => false);
+            if (hasFeed) break;
+          }
 
           if (hasFeed) {
             this.logger.log('Shared login successful! Writing marker file.');
-            this.writeLoginMarker();
-            return;
+            await this.writeLoginMarker();
+            loginDetected = true;
+            // Do NOT return immediately. Keep the browser alive so Firefox
+            // continues writing session data to the persistent profile.
+            // The profile on disk is what gets copied to new sessions.
+            // The window stays open until the user closes it or calls
+            // closeLoginWindow(). We just keep polling for the page close.
           }
         }
       } catch {
@@ -193,13 +243,29 @@ export class SharedLoginService {
     this.logger.warn('Login polling timed out after 10 minutes');
   }
 
-  private writeLoginMarker(): void {
+  private async writeLoginMarker(): Promise<void> {
     try {
       fs.mkdirSync(this.sharedProfileDir, { recursive: true });
+
+      // Save the full browser storage state (cookies + localStorage) to a
+      // JSON file using Playwright's storageState() API. This is the reliable
+      // way to persist login — it does not depend on Firefox's internal
+      // profile persistence (which may not flush in time).
+      if (this.page && !this.page.isClosed()) {
+        const state = await this.page.context().storageState();
+        fs.writeFileSync(this.storageStatePath, JSON.stringify(state, null, 2));
+        const cookieCount = state.cookies?.length ?? 0;
+        this.logger.log(
+          `Storage state saved to ${this.storageStatePath} (${cookieCount} cookies)`,
+        );
+      }
+
+      // Also write the marker file for backwards compatibility
       fs.writeFileSync(
         path.join(this.sharedProfileDir, '.openfb_logged_in'),
         new Date().toISOString(),
       );
+      this.logger.log(`Login marker written to ${this.sharedProfileDir}`);
     } catch (err) {
       this.logger.error(`Failed to write login marker: ${(err as Error).message}`);
     }
@@ -207,12 +273,21 @@ export class SharedLoginService {
 
   /**
    * Close the login window browser.
+   * Closes the browser gracefully first (so Firefox flushes cookies/session
+   * to the persistent profile), then kills the Camoufox Python process.
    */
   async closeLoginWindow(): Promise<void> {
+    // 1. Close the page and browser gracefully — this triggers Firefox to
+    //    write cookies, localStorage, and session data to disk.
     await this.cleanupBrowser();
+
+    // 2. Give Firefox a moment to finish writing profile data
+    await new Promise((r) => setTimeout(r, 3000));
+
+    // 3. Now kill the Camoufox Python process
     this.killProcess();
     this.loginWindowActive = false;
-    this.logger.log('Shared login window closed');
+    this.logger.log('Shared login window closed (profile saved to disk)');
   }
 
   get isOpen(): boolean {

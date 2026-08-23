@@ -141,6 +141,37 @@ export class SessionManagerService implements OnModuleDestroy {
     throw new Error('Screenshots not supported for this session type');
   }
 
+  /**
+   * Re-check whether a session is now authenticated.
+   * Called after the user manually completes Facebook login/verification.
+   */
+  async checkAuth(id: string): Promise<{ state: SessionState }> {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error(`Session ${id} not found`);
+    const state = await session.checkAuth();
+    return { state };
+  }
+
+  /**
+   * Diagnostic info: current URL, page title, and state.
+   * Useful for debugging login detection issues.
+   */
+  async diagnoseSession(id: string): Promise<{ state: string; url: string; title: string }> {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error(`Session ${id} not found`);
+    const camoufoxSession = session as any;
+    if (camoufoxSession.page && typeof camoufoxSession.page.url === 'function') {
+      try {
+        const url = camoufoxSession.page.url();
+        const title = await camoufoxSession.page.title().catch(() => 'unknown');
+        return { state: session.state, url, title };
+      } catch {
+        return { state: session.state, url: 'error reading url', title: 'error' };
+      }
+    }
+    return { state: session.state, url: 'no page available', title: 'none' };
+  }
+
   async onModuleDestroy(): Promise<void> {
     this.logger.log('Destroying all sessions...');
     const destroyPromises: Promise<void>[] = [];

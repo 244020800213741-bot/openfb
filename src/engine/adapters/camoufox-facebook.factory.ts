@@ -1,7 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as fs from 'fs';
-import * as path from 'path';
 import { CamoufoxProcessManager } from './camoufox-process-manager';
 import { CamoufoxFacebookSession } from './camoufox-facebook-session';
 import type { EngineAdapter, FacebookSession } from '../interfaces/engine.interface';
@@ -68,11 +66,16 @@ export class CamoufoxFacebookFactory implements EngineAdapter {
     const userDataDir = this.config.get<string>('CAMOUFOX_USER_DATA_DIR') || './data/profiles';
     const sessionProfileDir = `${userDataDir}/${sessionId}`;
 
-    // If a shared login profile exists, copy it into this session's profile
-    // so the new session inherits the Facebook login.
-    if (this.sharedLogin.hasSharedProfile) {
-      this.logger.log(`Copying shared login profile to session ${sessionId}`);
-      this.copyProfile(this.sharedLogin.profileDir, sessionProfileDir);
+    // Check if we have a saved login state (cookies) from the shared login.
+    // If we do, new sessions will load it after connecting via Playwright.
+    const sharedStorageState = this.sharedLogin.hasSharedProfile
+      ? this.sharedLogin.storageStateFile
+      : undefined;
+
+    if (sharedStorageState) {
+      this.logger.log(`Shared login found — will load storage state into session ${sessionId}`);
+    } else {
+      this.logger.warn(`No shared login found — session will start without login`);
     }
 
     const wsEndpoint = await processManager.start({
@@ -93,7 +96,9 @@ export class CamoufoxFacebookFactory implements EngineAdapter {
     // 2. Create the session and connect via Playwright
     const session = new CamoufoxFacebookSession(sessionId, label, processManager, wsEndpoint);
     try {
-      await session.connect();
+      // Pass the shared storage state file so the session can load cookies
+      // from the shared login.
+      await session.connect(sharedStorageState);
     } catch (err) {
       // If connection fails, kill the Camoufox process so it doesn't leak
       this.logger.error(`Session connection failed, cleaning up Camoufox process: ${(err as Error).message}`);
@@ -102,39 +107,6 @@ export class CamoufoxFacebookFactory implements EngineAdapter {
     }
 
     return session;
-  }
-
-  /**
-   * Recursively copy a profile directory, skipping lock files that would
-   * conflict with a running browser.
-   */
-  private copyProfile(src: string, dest: string): void {
-    try {
-      if (!fs.existsSync(src)) return;
-      fs.mkdirSync(dest, { recursive: true });
-
-      const skipFiles = new Set(['.openfb_logged_in', 'lock', 'parent.lock', 'SingletonLock']);
-
-      const copyRecursive = (currentSrc: string, currentDest: string) => {
-        const entries = fs.readdirSync(currentSrc, { withFileTypes: true });
-        for (const entry of entries) {
-          if (skipFiles.has(entry.name)) continue;
-          const srcPath = path.join(currentSrc, entry.name);
-          const destPath = path.join(currentDest, entry.name);
-          if (entry.isDirectory()) {
-            fs.mkdirSync(destPath, { recursive: true });
-            copyRecursive(srcPath, destPath);
-          } else {
-            fs.copyFileSync(srcPath, destPath);
-          }
-        }
-      };
-
-      copyRecursive(src, dest);
-      this.logger.log(`Profile copied from ${src} to ${dest}`);
-    } catch (err) {
-      this.logger.warn(`Failed to copy shared profile: ${(err as Error).message}. Session will start fresh.`);
-    }
   }
 
   async healthCheck(): Promise<{ healthy: boolean; details: string }> {

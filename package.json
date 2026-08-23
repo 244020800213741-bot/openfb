@@ -36,11 +36,8 @@
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.1.29",
     "@nestjs/platform-express": "^11.1.29",
-    "@nestjs/platform-socket.io": "^11.1.29",
     "@nestjs/serve-static": "^5.0.5",
     "@nestjs/swagger": "^11.4.6",
-    "@nestjs/throttler": "^6.5.0",
-    "@nestjs/websockets": "^11.1.29",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "helmet": "^8.3.0",
@@ -48,7 +45,6 @@
     "playwright": "1.60.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "socket.io": "^4.8.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -58,7 +54,6 @@
     "@nestjs/testing": "^11.1.29",
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
-    "@types/multer": "^2.2.0",
     "@types/node": "^22",
     "@types/nodemailer": "^6.4.17",
     "concurrently": "^10.0.4",

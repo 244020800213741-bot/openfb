@@ -44,6 +44,8 @@ export interface FacebookSession {
   getMarketplaceListing(listingId: string): Promise<MarketplaceListing | null>;
   /** Mark a chat as read */
   markAsRead(chatId: string): Promise<void>;
+  /** Re-check whether the session is now authenticated (after manual login) */
+  checkAuth(): Promise<SessionState>;
   /** Start listening for incoming messages and events */
   startListening(): Promise<void>;
   /** Stop listening */

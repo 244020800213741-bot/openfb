@@ -77,10 +77,36 @@ export class MarketplaceMonitorService implements OnModuleDestroy {
         `every ${config.intervalMinutes}min, max ${config.maxResults} results per email`,
     );
 
-    // Run the first search immediately
-    this.runSearch(sessionId).catch((err) => {
+    // Run the first search — wait for authentication first.
+    // The session may be in 'waiting_for_login' if the user hasn't completed
+    // Facebook's verification yet. We poll until authenticated, then search.
+    this.waitForAuthAndSearch(sessionId).catch((err) => {
       this.logger.error(`Monitor ${sessionId} initial search failed: ${err.message}`);
     });
+  }
+
+  /**
+   * Wait for the session to become authenticated, then run the first search.
+   * Polls the session state every 5 seconds for up to 30 minutes.
+   */
+  private async waitForAuthAndSearch(sessionId: string): Promise<void> {
+    const monitor = this.monitors.get(sessionId);
+    if (!monitor) return;
+
+    for (let i = 0; i < 360; i++) {
+      // 30 min max
+      if (!this.monitors.has(sessionId)) return; // monitor was unregistered
+      if (monitor.session.state === 'authenticated') {
+        await this.runSearch(sessionId);
+        return;
+      }
+      if (monitor.session.state === 'disconnected' || monitor.session.state === 'error') {
+        this.logger.warn(`Monitor ${sessionId} aborted: session state is ${monitor.session.state}`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+    this.logger.warn(`Monitor ${sessionId} timed out waiting for authentication after 30 minutes`);
   }
 
   /**
@@ -111,6 +137,12 @@ export class MarketplaceMonitorService implements OnModuleDestroy {
     if (!monitor) return;
 
     const { session, config } = monitor;
+
+    // Skip if session is not authenticated yet (will retry on next tick)
+    if (session.state !== 'authenticated') {
+      this.logger.log(`Skipping search for session ${sessionId}: state is ${session.state}`);
+      return;
+    }
 
     this.logger.log(`Running marketplace search for session ${sessionId}: "${config.query}"`);
 
@@ -151,7 +183,27 @@ export class MarketplaceMonitorService implements OnModuleDestroy {
     // Limit to maxResults
     const toSend = newListings.slice(0, config.maxResults);
 
-    // Send email
+    // Send email — but only if configured. If not, log results to console
+    // so the monitor still works (useful for testing without email setup).
+    if (!this.emailService.isConfigured) {
+      this.logger.warn(
+        `Email not configured — logging ${toSend.length} results to console instead. ` +
+          `Set GMAIL_USER and GMAIL_APP_PASSWORD in .env to receive email alerts.`,
+      );
+      for (const listing of toSend) {
+        const price = listing.price ? `${listing.currency} ${listing.price}` : 'N/A';
+        const location = listing.location ? ` · 📍 ${listing.location}` : '';
+        this.logger.log(
+          `  → ${listing.title} — ${price}${location} — ${listing.listingUrl}`,
+        );
+      }
+      monitor.totalEmailsSent += 1;
+      this.logger.log(
+        `Processed ${toSend.length} new listings for session ${sessionId} (email not configured, logged to console)`,
+      );
+      return;
+    }
+
     const recipient = config.emailTo || '';
     await this.emailService.sendMarketplaceResults(
       recipient,

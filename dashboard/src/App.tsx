@@ -15,6 +15,12 @@ async function api(path: string, options: RequestInit = {}) {
       ...options.headers,
     },
   });
+  if (res.status === 401) {
+    // Key is invalid/stale — clear it so the user can re-login
+    localStorage.removeItem('openfb_api_key');
+    window.location.reload();
+    throw new Error('Invalid or missing API key. Please log in again.');
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.message || `${res.status} ${res.statusText}`);
@@ -56,6 +62,10 @@ export default function App() {
   const [mqInterval, setMqInterval] = useState('30');
   const [mqMaxResults, setMqMaxResults] = useState('10');
   const [mqEmailTo, setMqEmailTo] = useState('');
+
+  // Facebook credentials (optional — used by some engine implementations)
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -204,6 +214,15 @@ export default function App() {
     }
   }
 
+  async function recheckAuth(id: string) {
+    try {
+      await api(`/session/${id}/check-auth`, { method: 'POST' });
+      refresh();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
   function toggleCondition(c: string) {
     setMqCondition((prev) =>
       prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c],
@@ -219,7 +238,7 @@ export default function App() {
   };
 
   const screenshotUrl = (id: string) =>
-    `${BASE_URL}/session/${id}/screenshot?apiKey=${encodeURIComponent(getApiKey())}`;
+    `${BASE_URL}/session/${id}/screenshot?apiKey=${getApiKey()}`;
 
   // ─── Login screen ───
   if (!authed) {
@@ -643,6 +662,11 @@ export default function App() {
                 <a className="btn" href={screenshotUrl(s.id)} target="_blank" rel="noopener noreferrer">
                   Screenshot
                 </a>
+                {s.state === 'waiting_for_login' && (
+                  <button className="btn success" onClick={() => recheckAuth(s.id)}>
+                    ✓ Re-check login
+                  </button>
+                )}
                 <button className="btn danger" onClick={() => destroySession(s.id)}>
                   Destroy
                 </button>
