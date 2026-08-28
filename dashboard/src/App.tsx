@@ -2,6 +2,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 
 const BASE_URL = '/api';
 
+// noVNC viewer is served on port 6080 of the same host as the dashboard.
+// Derive it from the current browser URL so it works from any client.
+const NOVNC_PORT = 6080;
+const novncUrl = `${window.location.protocol}//${window.location.hostname}:${NOVNC_PORT}`;
+
 function getApiKey(): string {
   return localStorage.getItem('openfb_api_key') || '';
 }
@@ -237,8 +242,11 @@ export default function App() {
     return <span className={`badge ${cls}`}>{state}</span>;
   };
 
+  // Screenshot is loaded as an <img>/<a> href, so it can't send headers.
+  // The ApiKeyGuard also accepts ?apiKey= as a query param, so we pass the
+  // key stored in localStorage here. Returns empty when not logged in.
   const screenshotUrl = (id: string) =>
-    `${BASE_URL}/session/${id}/screenshot?apiKey=${getApiKey()}`;
+    `${BASE_URL}/session/${id}/screenshot?apiKey=${encodeURIComponent(getApiKey())}`;
 
   // ─── Login screen ───
   if (!authed) {
@@ -347,6 +355,64 @@ export default function App() {
             </button>
           )}
         </div>
+
+        {loginStatus?.windowOpen && (
+          <div style={{ marginTop: '1rem' }}>
+            <div style={{
+              padding: '0.75rem 1rem',
+              background: 'var(--bg-elevated, #f0f4ff)',
+              border: '1px solid var(--accent, #4a90d9)',
+              borderRadius: '8px',
+              marginBottom: '0.75rem',
+              fontSize: '0.9rem',
+            }}>
+              <strong>👁️ Login window open.</strong> The browser is running inside the container's
+              virtual display. Click the button below to open the live viewer and complete your login:
+              <div style={{ marginTop: '0.5rem' }}>
+                <a
+                  href={`${novncUrl}/vnc.html?autoconnect=1&resize=scale`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'inline-block',
+                    padding: '0.5rem 1.25rem',
+                    background: 'var(--accent, #4a90d9)',
+                    color: '#fff',
+                    borderRadius: '6px',
+                    textDecoration: 'none',
+                    fontWeight: 600,
+                  }}
+                >
+                  🔗 Open noVNC viewer
+                </a>
+              </div>
+              <p className="muted" style={{ fontSize: '0.8rem', margin: '0.5rem 0 0' }}>
+                Tip: In the noVNC viewer, click anywhere to capture the mouse. Log in to Facebook
+                normally. When the login is detected (cookies <code>c_user</code> + <code>xs</code>),
+                the window closes automatically and the session is saved.
+              </p>
+            </div>
+
+            {/* Embedded viewer — lets you log in without leaving the dashboard */}
+            <details style={{ marginTop: '0.5rem' }}>
+              <summary style={{ cursor: 'pointer', fontSize: '0.9rem', fontWeight: 600 }}>
+                Embed viewer here (click to expand)
+              </summary>
+              <iframe
+                src={`${novncUrl}/vnc.html?autoconnect=1&resize=scale`}
+                style={{
+                  width: '100%',
+                  height: '500px',
+                  border: '1px solid var(--border, #ccc)',
+                  borderRadius: '8px',
+                  marginTop: '0.5rem',
+                }}
+                title="noVNC - Facebook Login"
+              />
+            </details>
+          </div>
+        )}
+
         {loginStatus?.hasSharedLogin && (
           <p className="muted" style={{ fontSize: '0.8rem', marginTop: '0.5rem' }}>
             Login saved. New sessions will inherit this login automatically.

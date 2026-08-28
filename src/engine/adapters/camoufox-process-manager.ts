@@ -2,7 +2,6 @@ import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as net from 'net';
 import { EventEmitter } from 'events';
-import { chromium } from 'playwright';
 
 /**
  * Manages the lifecycle of a Camoufox remote server process.

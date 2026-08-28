@@ -4,7 +4,8 @@ services:
   openfb:
     build: .
     ports:
-      - "3000:3000"
+      - "1212:3000"
+      - "6080:6080"  # noVNC web viewer — access at http://<server-ip>:6080/vnc.html
     env_file:
       - .env
     volumes:

@@ -61,12 +61,12 @@ export class SharedLoginService {
       if (!state.cookies || state.cookies.length === 0) {
         return false;
       }
-      // Check for Facebook session cookies
-      const hasFbCookies = state.cookies.some(
-        (c: any) =>
-          c.domain?.includes('facebook.com') || c.domain?.includes('messenger.com'),
-      );
-      return hasFbCookies;
+      // Check for Facebook session cookies — c_user and xs are ONLY set
+      // after a genuine login. datr/fr/sb/wd are set on the anonymous
+      // login page and must NOT be treated as "logged in".
+      const hasCUser = state.cookies.some((c: any) => c.name === 'c_user');
+      const hasXs = state.cookies.some((c: any) => c.name === 'xs');
+      return hasCUser && hasXs;
     } catch {
       return false;
     }
@@ -98,9 +98,15 @@ export class SharedLoginService {
       'launch_server.py',
     );
 
+    // Respect the CAMOUFOX_HEADLESS config so the login window works on
+    // headless servers (virtual = Xvfb, true = headless). Hardcoding
+    // 'false' crashes on servers without a display.
+    const headlessMode = this.config.get<string>('CAMOUFOX_HEADLESS');
+    const headlessArg = headlessMode ?? 'false';
+
     const args = [
       launcherScript,
-      '--headless', 'false',
+      '--headless', headlessArg,
       '--user-data-dir', this.sharedProfileDir,
       '--port', String(port),
       '--ws-path', 'openfb-shared-login',
@@ -151,6 +157,29 @@ export class SharedLoginService {
     this.browser = await firefox.connect(this.wsEndpoint, { timeout: 30_000 });
     const contexts = this.browser.contexts();
     const ctx = contexts[0] ?? (await this.browser.newContext());
+
+    // ── Clear ALL cookies, connected or not ──
+    // Start from a clean slate so a stale/blocked session never masquerades
+    // as a fresh login. Also wipe the on-disk storage state file.
+    try {
+      await ctx.clearCookies();
+      this.logger.log('Cleared all browser cookies before opening Facebook.');
+    } catch (err) {
+      this.logger.warn(`Could not clear browser cookies: ${(err as Error).message}`);
+    }
+    try {
+      if (fs.existsSync(this.storageStatePath)) {
+        fs.unlinkSync(this.storageStatePath);
+        this.logger.log('Deleted old storage_state.json before fresh login.');
+      }
+      const markerFile = path.join(this.sharedProfileDir, '.openfb_logged_in');
+      if (fs.existsSync(markerFile)) {
+        fs.unlinkSync(markerFile);
+      }
+    } catch (err) {
+      this.logger.warn(`Could not clean old login files: ${(err as Error).message}`);
+    }
+
     const pages = ctx.pages();
     this.page = pages[0] ?? (await ctx.newPage());
 
@@ -167,21 +196,29 @@ export class SharedLoginService {
     this.logger.log(`Shared login window open at ${this.wsEndpoint}`);
     return {
       wsEndpoint: this.wsEndpoint,
+      novncPort: 6080,
       message:
-        'Login window opened. Log in to Facebook in the browser window that appeared. ' +
-        'The session will be saved and shared with all new sessions.',
+        'Login window opened inside the container virtual display. ' +
+        'Open the noVNC viewer (port 6080) to see and interact with the Facebook login page. ' +
+        'Log in manually — the session will be saved and shared with all new sessions.',
     };
   }
 
   /**
-   * Poll for successful login and write a marker file when detected.
-   * After detecting login, keeps the browser alive briefly so Firefox
-   * flushes cookies/session data to the persistent profile on disk.
+   * Poll for successful login, then save the session and close Facebook.
+   *
+   * When c_user + xs appear (the cookies that are ONLY set after a genuine
+   * login), we save the storage state, give Firefox a moment to flush any
+   * remaining session data, and then close the login window automatically.
+   * Closing the window IS the "login success" signal to the user — once the
+   * browser window disappears, the login is saved and shared.
    */
   private async pollForLogin(): Promise<void> {
     if (!this.page) return;
 
     let loginDetected = false;
+    let stableChecks = 0;
+    const requiredStableChecks = 2; // Confirm login is stable, not transient
 
     for (let i = 0; i < 120; i++) {
       // 10 minutes max
@@ -195,48 +232,52 @@ export class SharedLoginService {
         if (loginDetected) continue;
 
         const url = this.page.url();
-        // If we're on the Facebook home feed (not login page), we're logged in
-        if (
-          (url.includes('facebook.com') || url.includes('messenger.com')) &&
-          !url.includes('login') &&
-          !url.includes('checkpoint')
-        ) {
-          // Double-check by looking for logged-in indicators.
-          // Try multiple selectors since FB UI changes frequently.
-          const loggedInSelectors = [
-            'div[role="feed"]',
-            'div[role="main"]',
-            'a[aria-label*="ccount" i]',
-            'a[aria-label*="Profile" i]',
-            'div[contenteditable="true"][role="textbox"]',
-            'a[href*="/t/"]',
-            'div[role="navigation"]',
-            'a[aria-label="Facebook"]',
-          ];
+        // If we're on a login or checkpoint page, definitely not logged in yet
+        if (url.includes('login') || url.includes('checkpoint')) {
+          stableChecks = 0;
+          continue;
+        }
 
-          let hasFeed = false;
-          for (const selector of loggedInSelectors) {
-            hasFeed = await this.page
-              .locator(selector)
-              .first()
-              .isVisible({ timeout: 2000 })
-              .catch(() => false);
-            if (hasFeed) break;
+        // Check for Facebook session cookies — c_user and xs are ONLY set
+        // after a genuine login. DOM selectors are unreliable because the
+        // facebook.com login page itself renders div[role="navigation"],
+        // a[aria-label="Facebook"], etc., which caused false positives.
+        const cookies = await this.page.context().cookies();
+        const hasCUser = cookies.some((c) => c.name === 'c_user');
+        const hasXs = cookies.some((c) => c.name === 'xs');
+
+        if (hasCUser && hasXs) {
+          stableChecks++;
+          if (stableChecks < requiredStableChecks) {
+            // Cookies present but let's confirm on the next poll that they
+            // persist (avoid acting on a transient checkpoint redirect).
+            continue;
           }
 
-          if (hasFeed) {
-            this.logger.log('Shared login successful! Writing marker file.');
-            await this.writeLoginMarker();
-            loginDetected = true;
-            // Do NOT return immediately. Keep the browser alive so Firefox
-            // continues writing session data to the persistent profile.
-            // The profile on disk is what gets copied to new sessions.
-            // The window stays open until the user closes it or calls
-            // closeLoginWindow(). We just keep polling for the page close.
-          }
+          this.logger.log('Shared login successful! Saving session and closing window.');
+          loginDetected = true;
+
+          // 1. Save the full browser storage state (cookies + localStorage)
+          await this.writeLoginMarker();
+
+          // 2. Give Firefox a moment to finish writing profile data to disk
+          await new Promise((r) => setTimeout(r, 3000));
+
+          // 3. Save storage state one more time to capture any cookies that
+          //    were set late (e.g. after a redirect following login).
+          await this.writeLoginMarker();
+
+          // 4. Close the login window automatically — this is the success
+          //    signal. The window disappears when the login is saved.
+          this.logger.log('Closing login window automatically (login success).');
+          await this.closeLoginWindow();
+          return;
+        } else {
+          stableChecks = 0;
         }
       } catch {
         // Page might not be ready yet
+        stableChecks = 0;
       }
       await new Promise((r) => setTimeout(r, 5000));
     }

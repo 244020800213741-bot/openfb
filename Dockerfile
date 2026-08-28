@@ -32,10 +32,12 @@ RUN npm run build
 # ─────────────────────────────────────────────
 FROM node:22-slim
 
-# Install Python, system deps for Firefox and Xvfb (for virtual display mode)
+# Install Python, system deps for Firefox, Xvfb, x11vnc + noVNC (web VNC viewer)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
     xvfb \
+    x11vnc \
+    novnc websockify \
     libgtk-3-0 libdbus-glib-1-2 libxt6 libasound2 \
     libnss3 libxss1 libatk1.0-0 libatk-bridge2.0-0 \
     libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 \
@@ -65,6 +67,12 @@ RUN python -m camoufox fetch || echo "Camoufox fetch failed — run manually"
 
 ENV NODE_ENV=production
 ENV CAMOUFOX_USER_DATA_DIR=/app/data/profiles
+ENV DISPLAY=:99
 EXPOSE 3000
+EXPOSE 6080
 
-CMD ["node", "dist/main.js"]
+# Copy the entrypoint script that starts Xvfb before the app
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+CMD ["/app/entrypoint.sh"]

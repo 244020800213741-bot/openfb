@@ -142,14 +142,16 @@ def main():
         sys.exit(1)
 
     # ── Merge env + CLI args ──
+    # launch_server() only accepts boolean headless (True/False), not "virtual".
+    # The Xvfb virtual display is managed by entrypoint.sh (DISPLAY=:99), so
+    # "virtual" and "false" both map to headed mode (False), which uses the
+    # Xvfb display. "true" stays headless.
     headless_str = env_or_none("CAMOUFOX_HEADLESS", args.headless)
     headless = None
-    if headless_str == "virtual":
-        headless = "virtual"
+    if headless_str in ("virtual", "false"):
+        headless = False
     elif headless_str == "true":
         headless = True
-    elif headless_str == "false":
-        headless = False
 
     os_val = env_or_none("CAMOUFOX_OS", args.os)
     os_list = os_val.split(",") if os_val else None

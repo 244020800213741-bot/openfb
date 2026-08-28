@@ -256,51 +256,24 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
       return false;
     }
 
-    // If we're not on facebook.com or messenger.com at all, probably not logged in
-    if (!url.includes('facebook.com') && !url.includes('messenger.com')) {
-      console.log('[CamoufoxFacebookSession] Not on FB/Messenger domain');
-      return false;
-    }
-
-    // Try multiple selectors that indicate a logged-in state.
-    // Facebook/Messenger UI changes frequently, so we check several.
-    const loggedInSelectors = [
-      // Messenger chat list items
-      'a[href*="/t/"]',
-      // Messenger / Facebook navigation bar
-      'div[role="navigation"]',
-      // Facebook top bar with account menu
-      'a[aria-label*="ccount" i]',
-      'a[aria-label*="Profile" i]',
-      // Messenger chat input box (only visible when logged in)
-      'div[contenteditable="true"][role="textbox"]',
-      // Facebook feed
-      'div[role="feed"]',
-      // Messenger left sidebar
-      'div[role="main"]',
-      // Facebook home link in nav
-      'a[aria-label="Facebook"]',
-      // Generic: any link to user's profile
-      'a[href*="/profile.php"]',
-    ];
-
-    for (const selector of loggedInSelectors) {
-      try {
-        const visible = await this.page
-          .locator(selector)
-          .first()
-          .isVisible({ timeout: 2000 })
-          .catch(() => false);
-        if (visible) {
-          console.log(`[CamoufoxFacebookSession] ✓ Logged in detected (selector: ${selector})`);
-          return true;
-        }
-      } catch {
-        // try next selector
+    // Check for Facebook session cookies — c_user and xs are ONLY set
+    // after a genuine login. DOM selectors are unreliable because the
+    // facebook.com login page renders many of the same selectors we
+    // previously relied on (div[role="navigation"], a[aria-label="Facebook"],
+    // etc.), which caused false positives.
+    try {
+      const cookies = await this.page.context().cookies();
+      const hasCUser = cookies.some((c) => c.name === 'c_user');
+      const hasXs = cookies.some((c) => c.name === 'xs');
+      if (hasCUser && hasXs) {
+        console.log('[CamoufoxFacebookSession] ✓ Logged in detected (cookies: c_user + xs)');
+        return true;
       }
+    } catch {
+      // fall through to selector fallback
     }
 
-    console.log('[CamoufoxFacebookSession] Not logged in — no logged-in selectors found');
+    console.log('[CamoufoxFacebookSession] Not logged in — no session cookies (c_user/xs) found');
     return false;
   }
 
