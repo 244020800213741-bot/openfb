@@ -76,10 +76,11 @@ export class SharedLoginService {
    * Open a browser window for the user to log in to Facebook.
    * The window stays open until the user closes it or calls closeLoginWindow().
    */
-  async openLoginWindow(): Promise<{ wsEndpoint: string; message: string }> {
+  async openLoginWindow(): Promise<{ wsEndpoint: string; novncPort: number; message: string }> {
     if (this.loginWindowActive && this.wsEndpoint) {
       return {
         wsEndpoint: this.wsEndpoint,
+        novncPort: 6080,
         message: 'Login window already open. Complete the login in the browser.',
       };
     }
