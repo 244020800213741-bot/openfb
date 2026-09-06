@@ -61,18 +61,32 @@ export class EmailService {
       throw new Error('No email recipient specified and GMAIL_TO/GMAIL_USER not set.');
     }
 
+    this.logger.log(
+      `Preparing email: ${listings.length} listings, query="${query}", ` +
+        `from=${this.fromAddress}, to=${recipient}`,
+    );
+
     const subject = `🛍️ ${listings.length} resultados de Marketplace: "${query}"`;
 
     const html = this.buildHtmlEmail(query, listings, searchUrl);
 
-    await this.transporter.sendMail({
-      from: `OpenFB <${this.fromAddress}>`,
-      to: recipient,
-      subject,
-      html,
-    });
-
-    this.logger.log(`Sent ${listings.length} marketplace results to ${recipient}`);
+    try {
+      const info = await this.transporter.sendMail({
+        from: `OpenFB <${this.fromAddress}>`,
+        to: recipient,
+        subject,
+        html,
+      });
+      this.logger.log(`Email sent to ${recipient} — messageId=${info.messageId}, response="${info.response}"`);
+    } catch (err) {
+      this.logger.error(
+        `Failed to send email to ${recipient}: ${(err as Error).message}\n` +
+          `Check: GMAIL_USER=${this.fromAddress ? 'set' : 'NOT SET'}, ` +
+          `GMAIL_APP_PASSWORD=${this.transporter ? 'set' : 'NOT SET'}, ` +
+          `recipient="${recipient}"`,
+      );
+      throw err;
+    }
   }
 
   private buildHtmlEmail(

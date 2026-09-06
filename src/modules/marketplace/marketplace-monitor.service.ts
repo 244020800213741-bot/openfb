@@ -144,7 +144,12 @@ export class MarketplaceMonitorService implements OnModuleDestroy {
       return;
     }
 
-    this.logger.log(`Running marketplace search for session ${sessionId}: "${config.query}"`);
+    this.logger.log(
+      `Running marketplace search for session ${sessionId}: query="${config.query}", ` +
+        `minPrice=${config.minPrice ?? '-'}, maxPrice=${config.maxPrice ?? '-'}, ` +
+        `location=${config.location ?? '-'}, interval=${config.intervalMinutes}min, ` +
+        `emailTo=${config.emailTo ?? '(default)'}`,
+    );
 
     // Build the search filters from the monitor config
     const filters: MarketplaceSearchFilters = {
@@ -162,8 +167,51 @@ export class MarketplaceMonitorService implements OnModuleDestroy {
 
     const result: MarketplaceSearchResult = await session.searchMarketplace(filters);
 
-    // Filter out previously-seen listings
+    // Safety net: enforce price filters client-side. Facebook's Marketplace
+    // price filter is unreliable — it sometimes ignores the filled-in value or
+    // returns results before the filter takes effect. Strip out anything that
+    // violates the requested range so the email never shows out-of-range items.
+    const beforePriceFilter = result.listings.length;
+    if (config.minPrice !== undefined || config.maxPrice !== undefined) {
+      result.listings = result.listings.filter((l) => {
+        if (l.price <= 0) return true; // keep if price unknown/unparseable
+        if (config.minPrice !== undefined && l.price < config.minPrice) return false;
+        if (config.maxPrice !== undefined && l.price > config.maxPrice) return false;
+        return true;
+      });
+      if (result.listings.length < beforePriceFilter) {
+        this.logger.log(
+          `Price filter removed ${beforePriceFilter - result.listings.length} listing(s) ` +
+            `outside [${config.minPrice ?? '-∞'}, ${config.maxPrice ?? '+∞'}] for session ${sessionId}`,
+        );
+      }
+    }
+
+    // Filter out listings priced in foreign currency (dlls, dólares, USD, etc.)
+    // The user searches in Argentine pesos; listings in USD are always way over
+    // budget and should never be sent.
+    const foreignCurrencyPattern = /\b(dlls|dolare?s|d[oó]llare?s|us\$|u\$s|usd|dollars?)\b/i;
+    const beforeCurrencyFilter = result.listings.length;
+    result.listings = result.listings.filter((l) => {
+      const text = `${l.title} ${l.location}`;
+      if (foreignCurrencyPattern.test(text)) return false;
+      return true;
+    });
+    if (result.listings.length < beforeCurrencyFilter) {
+      this.logger.log(
+        `Currency keyword filter removed ${beforeCurrencyFilter - result.listings.length} listing(s) ` +
+          `for session ${sessionId}`,
+      );
+    }
+
+    // Filter out previously-seen listings. Cap the seen set at 200 entries —
+    // when it fills up, clear it so new searches can re-send active listings
+    // instead of silently dropping everything after a few emails.
     const seen = this.seenListingIds.get(sessionId) || new Set<string>();
+    if (seen.size >= 200) {
+      this.logger.log(`Seen-list full (200) for session ${sessionId} — clearing to allow fresh results`);
+      seen.clear();
+    }
     const newListings = result.listings.filter((l) => {
       if (seen.has(l.id)) return false;
       seen.add(l.id);
@@ -205,18 +253,28 @@ export class MarketplaceMonitorService implements OnModuleDestroy {
     }
 
     const recipient = config.emailTo || '';
-    await this.emailService.sendMarketplaceResults(
-      recipient,
-      config.query,
-      toSend,
-      result.searchUrl,
-    );
-
-    monitor.totalEmailsSent += 1;
     this.logger.log(
-      `Sent ${toSend.length} new listings via email for session ${sessionId} ` +
-        `(total emails: ${monitor.totalEmailsSent})`,
+      `Sending ${toSend.length} listing(s) to "${recipient}" (from ${this.emailService.constructor.name}) for session ${sessionId}`,
     );
+    try {
+      await this.emailService.sendMarketplaceResults(
+        recipient,
+        config.query,
+        toSend,
+        result.searchUrl,
+      );
+      monitor.totalEmailsSent += 1;
+      this.logger.log(
+        `Sent ${toSend.length} new listings via email to ${recipient} for session ${sessionId} ` +
+          `(total emails: ${monitor.totalEmailsSent})`,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Email send FAILED for session ${sessionId} → recipient "${recipient}": ${(err as Error).message}`,
+      );
+      // Re-throw so the interval catch logs it too
+      throw err;
+    }
   }
 
   async onModuleDestroy(): Promise<void> {

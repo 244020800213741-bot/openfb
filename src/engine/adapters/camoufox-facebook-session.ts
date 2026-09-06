@@ -596,13 +596,30 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
         ? listings.filter((l) => !l.postedDate || l.postedDate >= filters.postedAfter!)
         : listings;
 
+      // Safety net: enforce price filters client-side. Facebook's Marketplace
+      // price filter is unreliable — it sometimes ignores the filled-in value
+      // or returns results before the filter takes effect. Strip out anything
+      // outside the requested range so callers never see out-of-range items.
+      const priceFiltered =
+        filters.minPrice !== undefined || filters.maxPrice !== undefined
+          ? filtered.filter((l) => {
+              if (l.price <= 0) return true; // keep if price unknown/unparseable
+              if (filters.minPrice !== undefined && l.price < filters.minPrice) return false;
+              if (filters.maxPrice !== undefined && l.price > filters.maxPrice) return false;
+              return true;
+            })
+          : filtered;
+
       this.lastActivityAt = new Date();
 
-      console.log(`[CamoufoxFacebookSession] Marketplace search returned ${filtered.length} listings (of ${listings.length} total)`);
+      console.log(
+        `[CamoufoxFacebookSession] Marketplace search returned ${priceFiltered.length} listings ` +
+          `(of ${listings.length} total, ${filtered.length} after date filter)`,
+      );
 
       return {
-        listings: filtered,
-        totalFound: filtered.length,
+        listings: priceFiltered,
+        totalFound: priceFiltered.length,
         filters,
         searchUrl,
         timestamp: new Date(),
@@ -683,6 +700,23 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
       console.log('[CamoufoxFacebookSession] Market URL has no location — Facebook will use IP-based location');
     }
 
+    // Set price range in the URL itself. This is more reliable than filling
+    // the UI input boxes — Facebook frequently ignores or fails to apply the
+    // UI filters, especially on page reloads. The URL params are respected
+    // server-side on the initial search.
+    if (filters.minPrice !== undefined && filters.minPrice > 0) {
+      params.set('minPrice', String(filters.minPrice));
+    }
+    if (filters.maxPrice !== undefined && filters.maxPrice > 0) {
+      params.set('maxPrice', String(filters.maxPrice));
+    }
+
+    // Set radius in the URL — Facebook accepts it as a query param too.
+    if (filters.radiusKm) {
+      // Facebook radius is in kilometers (e.g. 1, 2, 5, 10, 25, 50, 100, 250, 500)
+      params.set('radius', String(filters.radiusKm));
+    }
+
     // Sort maps to the `sortBy` URL param on Facebook
     const sortMap: Record<MarketplaceSort, string> = {
       relevance: 'creation_time_descend',
@@ -707,7 +741,9 @@ export class CamoufoxFacebookSession extends EventEmitter implements FacebookSes
       else if (daysAgo <= 30) params.set('daysSinceListed', '30');
     }
 
-    return `${MARKETPLACE_URL}search/?${params.toString()}`;
+    const finalUrl = `${MARKETPLACE_URL}search/?${params.toString()}`;
+    console.log(`[CamoufoxFacebookSession] Built marketplace URL: ${finalUrl}`);
+    return finalUrl;
   }
 
   /**
