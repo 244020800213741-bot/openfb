@@ -9,6 +9,13 @@ import type {
 import type { FacebookSession } from '../../engine/interfaces/engine.interface';
 import { EmailService } from '../email/email.service';
 
+/** Common Spanish words that should not count for relevance matching. */
+const STOP_WORDS = new Set([
+  'de', 'la', 'el', 'los', 'las', 'un', 'una', 'unos', 'unas',
+  'y', 'o', 'u', 'en', 'para', 'por', 'con', 'sin', 'que', 'del',
+  'al', 'lo', 'le', 'se', 'su', 'sus', 'es', 'son', 'the', 'and',
+]);
+
 interface ActiveMonitor {
   sessionId: string;
   session: FacebookSession;
@@ -202,6 +209,39 @@ export class MarketplaceMonitorService implements OnModuleDestroy {
         `Currency keyword filter removed ${beforeCurrencyFilter - result.listings.length} listing(s) ` +
           `for session ${sessionId}`,
       );
+    }
+
+    // Relevance filter: keep only listings whose title contains at least one
+    // meaningful word from the search query. Facebook's Marketplace search is
+    // fuzzy and returns "related" items (e.g. cameras when you search for
+    // "tarjeta de video"). This strips out results that don't match at all.
+    const queryWords = config.query
+      .toLowerCase()
+      .split(/\s+/)
+      .map((w) => w.trim())
+      .filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+    if (queryWords.length > 0) {
+      const beforeRelevanceFilter = result.listings.length;
+      result.listings = result.listings.filter((l) => {
+        const titleLower = l.title.toLowerCase();
+        // Match if any query word appears in the title (also handle accents)
+        const normalizedTitle = titleLower
+          .replace(/á/g, 'a').replace(/é/g, 'e').replace(/í/g, 'i')
+          .replace(/ó/g, 'o').replace(/ú/g, 'u');
+        return queryWords.some((w) => {
+          const normalizedWord = w
+            .replace(/á/g, 'a').replace(/é/g, 'e').replace(/í/g, 'i')
+            .replace(/ó/g, 'o').replace(/ú/g, 'u');
+          // Check both the original and normalized forms
+          return titleLower.includes(w) || normalizedTitle.includes(normalizedWord);
+        });
+      });
+      if (result.listings.length < beforeRelevanceFilter) {
+        this.logger.log(
+          `Relevance filter removed ${beforeRelevanceFilter - result.listings.length} listing(s) ` +
+            `not matching query words [${queryWords.join(', ')}] for session ${sessionId}`,
+        );
+      }
     }
 
     // Filter out previously-seen listings. Cap the seen set at 200 entries —
