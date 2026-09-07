@@ -16,6 +16,48 @@ const STOP_WORDS = new Set([
   'al', 'lo', 'le', 'se', 'su', 'sus', 'es', 'son', 'the', 'and',
 ]);
 
+/** Synonym groups: if the query contains any word from a group, the title
+ *  matches if it contains ANY word from that same group (not just the exact
+ *  query word). This handles e.g. "tarjeta de video" matching "placa de video"
+ *  or "gpu", "tarjeta grafica", etc. */
+const SYNONYM_GROUPS: string[][] = [
+  // Graphics card / GPU
+  ['tarjeta', 'placa', 'grafica', 'gráfica', 'grafica', 'video', 'gpu',
+   'rx', 'rtx', 'gtx', 'geforce', 'radeon', 'nvidia', 'amd', 'arc',
+   'aorus', 'gigabyte', 'asus', 'msi', 'evga', 'zotac', 'pny',
+   '3060', '3070', '3080', '3090', '4060', '4070', '4080', '4090',
+   '6600', '6700', '6800', '6900', '7500', '7600', '7700', '7800', '7900'],
+  // Phone / smartphone
+  ['celular', 'telefono', 'teléfono', 'phone', 'smartphone', 'iphone',
+   'samsung', 'xiaomi', 'motorola', 'moto', 'huawei', 'oneplus', 'pixel'],
+  // Laptop / notebook
+  ['laptop', 'notebook', 'portatil', 'portátil', 'computadora', 'pc',
+   'desktop', 'torre', 'cpu', 'gamer'],
+];
+
+/** Build a lookup: word → set of all synonyms across all groups. */
+const SYNONYM_MAP = new Map<string, Set<string>>();
+for (const group of SYNONYM_GROUPS) {
+  for (const word of group) {
+    const normalized = normalize(word);
+    if (!SYNONYM_MAP.has(normalized)) {
+      SYNONYM_MAP.set(normalized, new Set<string>());
+    }
+    const set = SYNONYM_MAP.get(normalized)!;
+    for (const other of group) {
+      set.add(normalize(other));
+    }
+  }
+}
+
+/** Normalize text: lowercase + strip accents. */
+function normalize(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/á/g, 'a').replace(/é/g, 'e').replace(/í/g, 'i')
+    .replace(/ó/g, 'o').replace(/ú/g, 'u');
+}
+
 interface ActiveMonitor {
   sessionId: string;
   session: FacebookSession;
@@ -212,29 +254,34 @@ export class MarketplaceMonitorService implements OnModuleDestroy {
     }
 
     // Relevance filter: keep only listings whose title contains at least one
-    // meaningful word from the search query. Facebook's Marketplace search is
-    // fuzzy and returns "related" items (e.g. cameras when you search for
-    // "tarjeta de video"). This strips out results that don't match at all.
+    // meaningful word from the search query (or a synonym of it). Facebook's
+    // Marketplace search is fuzzy and returns "related" items (e.g. cameras
+    // when you search for "tarjeta de video"). This strips out results that
+    // don't match at all, while still allowing synonyms like "placa" or "gpu".
     const queryWords = config.query
       .toLowerCase()
       .split(/\s+/)
       .map((w) => w.trim())
-      .filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+      .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
     if (queryWords.length > 0) {
+      // For each query word, collect all acceptable match words (itself + synonyms)
+      const acceptableWords = new Set<string>();
+      for (const w of queryWords) {
+        const nw = normalize(w);
+        acceptableWords.add(nw);
+        const syns = SYNONYM_MAP.get(nw);
+        if (syns) {
+          for (const s of syns) acceptableWords.add(s);
+        }
+      }
       const beforeRelevanceFilter = result.listings.length;
       result.listings = result.listings.filter((l) => {
-        const titleLower = l.title.toLowerCase();
-        // Match if any query word appears in the title (also handle accents)
-        const normalizedTitle = titleLower
-          .replace(/á/g, 'a').replace(/é/g, 'e').replace(/í/g, 'i')
-          .replace(/ó/g, 'o').replace(/ú/g, 'u');
-        return queryWords.some((w) => {
-          const normalizedWord = w
-            .replace(/á/g, 'a').replace(/é/g, 'e').replace(/í/g, 'i')
-            .replace(/ó/g, 'o').replace(/ú/g, 'u');
-          // Check both the original and normalized forms
-          return titleLower.includes(w) || normalizedTitle.includes(normalizedWord);
-        });
+        const normalizedTitle = normalize(l.title);
+        // Match if any acceptable word appears in the title
+        for (const word of acceptableWords) {
+          if (normalizedTitle.includes(word)) return true;
+        }
+        return false;
       });
       if (result.listings.length < beforeRelevanceFilter) {
         this.logger.log(
